@@ -1,0 +1,388 @@
+# Kubernetes 部署清单
+#
+# Deployment（部署）用来管理一组相同的 Pod，确保始终有期望数量的副本在运行。
+# 它还负责滚动更新、回滚和扩缩容。
+#
+# 学习目标：
+# - 理解 Deployment 的规范
+# - 配置资源请求和限制
+# - 实现健康检查（liveness（存活）与 readiness（就绪）探针）
+# - 使用 ConfigMap 进行配置管理
+# - 设置滚动更新策略
+
+apiVersion: apps/v1  # Deployment 资源的 API 版本
+kind: Deployment
+metadata:
+  name: model-api
+  namespace: ml-serving  # 部署到 ml-serving 命名空间（需要单独创建）
+  labels:
+    app: model-api
+    version: v1.0
+    component: inference
+    managed-by: kubectl  # 使用 Helm 部署时会变为 'helm'
+
+spec:
+  # ========================================================================
+  # 副本配置
+  # ========================================================================
+
+  # 设置 pod 副本数量为 3
+  # 这样能保证高可用 - 如果一个 pod 故障，还有 2 个能继续服务
+  # 问题：为什么要用 3 个副本而不是 2 个？
+  # 解答：2 个副本且 maxUnavailable=0 时，滚动更新会很慢
+  #       3 个副本时，可以有 1 个正在更新，2 个以上仍对外提供服务
+  replicas: 3 
+
+  # ========================================================================
+  # 选择器
+  # ========================================================================
+
+  # 配置选择器以匹配 pod 的标签
+  # 选择器决定了这个 Deployment 管理哪些 Pod
+  # 必须与 spec.template.metadata.labels 匹配
+  selector:
+    matchLabels:
+      # 添加标签 app: model-api
+      # 这告诉 Deployment 它归属于哪些 pod
+      app: model-api  # 删除此项并添加正确的标签
+
+  # ========================================================================
+  # 更新策略
+  # ========================================================================
+
+  # 配置 RollingUpdate 策略，实现无中断部署
+  strategy:
+    type: RollingUpdate  # 可选：Recreate（会造成停机）
+    rollingUpdate:
+      # 设置 maxSurge 为 1
+      # maxSurge：更新时，能额外多创建的 pod 数量
+      # 例：3 个副本、maxSurge=1，则更新期间最多有 4 个 pod
+      # 优点：加快更新速度
+      # 代价：更新期间资源占用更多
+      maxSurge: 1  # 改成 1
+
+      # 设置 maxUnavailable 为 0
+      # maxUnavailable：更新时，最多有多少 pod 不可用
+      # maxUnavailable=0 可实现零停机
+      # 更新流程：先创建新 pod → 等待就绪 → 再删除旧 pod
+      maxUnavailable: 0  # 改成 0
+
+  # ========================================================================
+  # POD 模板
+  # ========================================================================
+
+  template:
+    metadata:
+      labels:
+        # 添加与 selector 相同的标签
+        # 这些标签会加到所有被该 Deployment 创建的 pod 上
+        app: model-api  # 必须与 selector 匹配
+        version: v1.0   # 用于流量路由（后期可配合 Istio）
+
+      annotations:
+        #  添加 Prometheus 指标采集的注解
+        # 这些注解告诉 Prometheus 如何采集该 pod 的指标
+        # 把 'false' 改为 'true'，并设置正确的端口与路径
+        prometheus.io/scrape: "true"  # 改成 "true"
+        prometheus.io/port: "5000"        # 改成 "5000"
+        prometheus.io/path: "/metrics"  # 改成 "/metrics"
+
+    spec:
+      # ====================================================================
+      # 容器配置
+      # ====================================================================
+
+      containers:
+      - name: model-api
+
+        # 设置容器镜像
+        # 格式：registry/repository:tag
+        # 本地 Minikube 测试用：model-api:v1.0
+        # 云端部署用：<你的仓库地址>/model-api:v1.0
+        image: model-api:v1.0
+
+        # 设置 imagePullPolicy
+        # 可选项：
+        # - Always: 每次都拉取镜像（用于latest标签）
+        # - IfNotPresent: 本地无缓存时才拉取（用于带版本号标签）
+        # - Never: 从不拉取，只用本地镜像
+        imagePullPolicy: "IfNotPresent"  # 改为 IfNotPresent
+
+        # ==================================================================
+        # 端口
+        # ==================================================================
+
+        ports:
+        - name: http
+          # 设置 containerPort 为 5000（Flask 默认端口）
+          containerPort: 5000  # 改成 5000
+          protocol: TCP
+
+        # ==================================================================
+        # 环境变量（取自 ConfigMap）
+        # ==================================================================
+
+        env:
+        # TODO: 从 ConfigMap 注入环境变量
+        # 这些变量来自名为 'model-config' 的 ConfigMap
+        # 应用会在启动时读取这些变量（见 src/app.py）
+
+        - name: MODEL_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: "model-config"  # 改为 'model-config'
+              key: "model_name"   # 改为 'model_name'
+
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: "model-config"  # 改为 'model-config'
+              key: "log_level"   # 改为 'log_level'
+
+        - name: MAX_BATCH_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: "model-config"  # 改为 'model-config'
+              key: "max_batch_size"   # 改为 'max_batch_size'
+
+        - name: PORT
+          value: "5000"  # 改成 "5000"
+
+        # ==================================================================
+        # 资源请求和限制
+        # ==================================================================
+
+        # TODO: 配置资源管理
+        # 资源保证性能可预测，并防止资源被抢占
+        resources:
+          requests:
+            # CPU 请求：为调度保证的 CPU 量
+            # 单位：millicores（1000m=1核）
+            # 设置为 500m（0.5核）
+            cpu: "500m"
+
+            # 内存请求：保证的内存分配
+            # 单位：Gi（Gibibytes）、Mi（Mebibytes）
+            # 设置为 1Gi
+            memory: "1Gi"
+
+          limits:
+            # CPU 限制：容器能用的最大 CPU
+            # 可以超过请求上限，直到限制数
+            # 设置为 1000m（1 核）= 请求的 2 倍
+            cpu: "1000m"
+
+            # 内存限制：超出会被 OOMKill
+            # 超出后容器会被终止
+            # 设置为 2Gi = 请求的 2 倍
+            memory: "2Gi"
+
+        # 为什么选择这些值？
+        # - CPU 请求 500m：典型推理任务需要
+        # - CPU 限制 1000m：允许高峰时短暂突发
+        # - 内存请求 1Gi：模型+框架开销所需
+        # - 内存限制 2Gi：防止内存泄漏或占用过大
+
+        # ==================================================================
+        # 存活探针（Liveness Probe）
+        # ==================================================================
+
+        # TODO: 配置 liveness probe
+        # 作用：检测应用是否陷入异常，若多次失败则重启容器
+        livenessProbe:
+          httpGet:
+            path: "/health"     # TODO: 改为 /health
+            port: 5000      # 改为 5000
+            scheme: HTTP
+
+          # TODO: initialDelaySeconds 设为 30
+          # 启动容器后延迟 30 秒首次检测
+          # 原因：模型加载可能需 10~20 秒
+          initialDelaySeconds: 30  # 改成 30
+
+          # TODO: periodSeconds 设为 10
+          # 之后每 10 秒检测一次
+          periodSeconds: 10  # 改成 10
+
+          # TODO: timeoutSeconds 设为 5
+          # 探测 5 秒无响应则判超时
+          timeoutSeconds: 5  # 改成 5
+
+          # TODO: failureThreshold 设为 3
+          # 连续 3 次失败才重启（共约 30 秒）
+          failureThreshold: 3  # 改成 3
+
+          # TODO: successThreshold 设为 1
+          # 检测 1 次成功则判为健康
+          successThreshold: 1  # 改成 1
+
+        # ==================================================================
+        # 就绪探针（Readiness Probe）
+        # ==================================================================
+
+        # TODO: 配置 readiness probe
+        # 作用：判定 pod 是否可接收流量
+        # 如果失败，会从 Service endpoints 移除该 pod
+        readinessProbe:
+          httpGet:
+            path: "/health"     # TODO: 改为 /health
+            port: 5000      # 改为 5000
+            scheme: HTTP
+
+          # TODO: initialDelaySeconds 设为 10
+          # 比 liveness 探针更早启动（10秒 vs 30秒）
+          # 原因：希望尽快知道 pod 已准备好
+          initialDelaySeconds: 10  # 改成 10
+
+          # TODO: periodSeconds 设为 5
+          # 检测更频繁（5s vs 10s）
+          # 原因：更快发现状态变更
+          periodSeconds: 5  # 改成 5
+
+          # TODO: timeoutSeconds 设为 3
+          # 超时时间比 liveness 更短
+          timeoutSeconds: 3  # 改成 3
+
+          # TODO: failureThreshold 设为 3
+          # 连续 3 次失败判为不就绪（约 15 秒）
+          failureThreshold: 3  # 改成 3
+
+          # TODO: successThreshold 设为 1
+          # 连续 1 次成功即判为就绪（快速恢复）
+          successThreshold: 1  # 改成 1
+
+        # ==================================================================
+        # 生命周期钩子（可选，但推荐）
+        # ==================================================================
+
+        # 配置 preStop 钩子，实现优雅终止
+        lifecycle:
+          preStop:
+            httpGet:
+              path: /shutdown
+              port: 5000
+        
+        # 或用 sleep 实现优雅下线：
+       # lifecycle:
+         # preStop:
+            exec:
+              # command: ["/bin/sh", "-c", "sleep 5"]
+
+        # 为什么要设 preStop 钩子？
+        # 终止 pod 时给应用留时间处理完请求
+        # 避免终止阶段连接异常
+
+      # ====================================================================
+      # POD 层级配置
+      # ====================================================================
+
+      # TODO: terminationGracePeriodSeconds 设为 30
+      # 收到 SIGTERM 后延迟 SIGKILL 的时间
+      # 默认 30 秒，足够多数应用优雅关闭
+      # terminationGracePeriodSeconds: 30
+
+      #  配置安全上下文（可选，但推荐）
+      # 建议非 root 用户运行提升安全性
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      # 配置 affinity 规则（可选，用于多可用区部署）
+      # 分散 pod 至各节点/可用区增加高可用
+      # affinity:
+      #   podAntiAffinity:
+      #     preferredDuringSchedulingIgnoredDuringExecution:
+      #     - weight: 100
+      #       podAffinityTerm:
+      #         labelSelector:
+      #           matchLabels:
+      #             app: model-api
+      #         topologyKey: kubernetes.io/hostname
+
+---
+
+# ============================================================================
+# 部署操作指南
+# ============================================================================
+
+# 1. 创建命名空间（如未存在）：
+#    kubectl create namespace ml-serving
+
+# 2. 先应用 ConfigMap（依赖项）：
+#    kubectl apply -f configmap.yaml -n ml-serving
+
+# 3. 部署本 Deployment：
+#    kubectl apply -f deployment.yaml -n ml-serving
+
+# 4. 验证部署状态：
+#    kubectl get deployment model-api -n ml-serving
+#    kubectl get pods -n ml-serving
+#    kubectl describe deployment model-api -n ml-serving
+
+# 5. 查看 pod 日志：
+#    kubectl logs -f deployment/model-api -n ml-serving
+
+# 6. 检查 pod 健康：
+#    kubectl get pods -n ml-serving -o wide
+#    # 所有 pod 应显示 STATUS: Running, READY: 1/1
+
+# 7. 测试健康检查接口：
+#    kubectl port-forward deployment/model-api 8080:5000 -n ml-serving
+#    curl http://localhost:8080/health
+
+# ============================================================================
+# 常用操作
+# ============================================================================
+
+# 扩容 deployment：
+#   kubectl scale deployment model-api --replicas=5 -n ml-serving
+
+# 更新镜像（滚动更新）：
+#   kubectl set image deployment/model-api model-api=model-api:v1.1 -n ml-serving
+
+# 观察滚动更新进度：
+#   kubectl rollout status deployment/model-api -n ml-serving
+
+# 查看发布历史：
+#   kubectl rollout history deployment/model-api -n ml-serving
+
+# 回滚到上一个版本：
+#   kubectl rollout undo deployment/model-api -n ml-serving
+
+# 回滚到指定版本：
+#   kubectl rollout undo deployment/model-api --to-revision=2 -n ml-serving
+
+# ============================================================================
+# 故障排查
+# ============================================================================
+
+# Pod 启动失败：
+#   kubectl describe pod <pod-name> -n ml-serving
+#   # 检查 Events 区域查找原因
+
+# Pod 崩溃：
+#   kubectl logs <pod-name> -n ml-serving
+#   kubectl logs <pod-name> -n ml-serving --previous  # 查看上次崩溃日志
+
+# Readiness 探针失败：
+#   kubectl describe pod <pod-name> -n ml-serving
+#   # 查看 Events 是否有探针失败记录
+#   kubectl exec <pod-name> -n ml-serving -- curl localhost:5000/health
+
+# 资源占用高：
+#   kubectl top pod -n ml-serving
+#   kubectl describe pod <pod-name> -n ml-serving | grep -A 8 Limits
+
+# ============================================================================
+# 学习检查点
+# ============================================================================
+
+# 完成本文件后你应该理解：
+# ✓ Deployment 如何管理 pod 生命周期
+# ✓ requests 与 limits 的区别
+# ✓ 存活与就绪探针的作用
+# ✓ 滚动更新策略（maxSurge、maxUnavailable）
+# ✓ ConfigMap 与环境变量集成方法
+# ✓ 资源管理与调度
+# ✓ 优雅终止与生命周期钩子

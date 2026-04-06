@@ -1,0 +1,128 @@
+# Prometheus ServiceMonitor
+#
+# ServiceMonitor 是 Prometheus Operator 的一个 CRD（自定义资源定义），
+# 用于声明式地指定如何监控一组服务。
+#
+# 学习目标：
+# - 了解 Prometheus Operator 和 ServiceMonitor CRD
+# - 配置指标的自动服务发现
+# - 设置抓取的时间间隔和端点
+# - 使用标签选择器进行服务匹配
+
+# 注意：ServiceMonitor 需要已安装 Prometheus Operator
+# 如果只用 Prometheus 而没有 Operator，需要在 Prometheus 的 ConfigMap 中手动配置 scrape configs
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: model-api-monitor
+  namespace: ml-serving
+  labels:
+    app: model-api
+    release: prometheus
+
+spec:
+
+  # ========================================================================
+  # 服务选择器
+  # ========================================================================
+
+  selector:
+    matchLabels:
+      placeholder: model-api
+  
+  # ========================================================================
+  # 命名空间选择器
+  # ========================================================================
+
+  namespaceSelector:
+    matchNames:
+      - "ml-serving"
+
+  # ========================================================================
+  # 端点
+  # ========================================================================
+  # 每个端点定义从服务中抓取指标的方式
+  endpoints:
+  - port: "http"
+    # Prometheus 从此路径抓取指标
+    path: "/metrics"
+    # Prometheus 多久抓取一次指标
+    interval: "30s" # 默认30s
+    # 抓取时等待响应的最长时间
+    # 必须小于 interval
+    scrapeTimeout: "10s"
+    # 如果服务用 TLS，用 "https"
+    scheme: "http"
+
+  # =====================================================================
+  # 重标签（可选但有用）
+  # =====================================================================
+
+    # TODO: 配置指标重标签（可选）
+    # 重标签可以在存储指标前转换标签
+    # 使用场景：
+    # - 增加自定义标签
+    # - 重命名标签
+    # - 丢弃不需要的指标
+    # - 按标签值过滤
+
+    # 示例：增加环境标签
+    # metricRelabelings:
+    # - sourceLabels: [__address__]
+    #   targetLabel: environment
+    #   replacement: production
+
+    # 示例：丢弃高基数指标
+    # metricRelabelings:
+    # - action: drop
+    #   regex: "user_.*"  # 丢弃所有 user 相关指标
+    #   sourceLabels: [__name__]
+
+    # TODO: 配置重标签，将 pod 元数据加入指标（可选）
+    # relabelings:
+    # - sourceLabels: [__meta_kubernetes_pod_name]
+    #   targetLabel: pod
+    # - sourceLabels: [__meta_kubernetes_pod_node_name]
+    #   targetLabel: node
+    # - sourceLabels: [__meta_kubernetes_namespace]
+    #   targetLabel: namespace
+
+  
+# ============================================================================
+# 备用方案：Prometheus ConfigMap（未使用 Operator）
+# ============================================================================
+
+# 如果未使用 Prometheus Operator，则需在 Prometheus ConfigMap 添加 scrape config：
+
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: prometheus-config
+#   namespace: monitoring
+# data:
+#   prometheus.yml: |
+#     global:
+#       scrape_interval: 30s
+#       evaluation_interval: 30s
+#
+#     scrape_configs:
+#     - job_name: 'model-api'
+#       kubernetes_sd_configs:
+#       - role: endpoints
+#         namespaces:
+#           names:
+#           - ml-serving
+#       relabel_configs:
+#       - source_labels: [__meta_kubernetes_service_label_app]
+#         action: keep
+#         regex: model-api
+#       - source_labels: [__meta_kubernetes_endpoint_port_name]
+#         action: keep
+#         regex: http
+#       - source_labels: [__meta_kubernetes_namespace]
+#         target_label: namespace
+#       - source_labels: [__meta_kubernetes_service_name]
+#         target_label: service
+#       - source_labels: [__meta_kubernetes_pod_name]
+#         target_label: pod

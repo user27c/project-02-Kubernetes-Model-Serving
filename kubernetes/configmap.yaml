@@ -1,0 +1,283 @@
+# Kubernetes ConfigMap
+#
+# ConfigMaps 以键值对形式存储配置信息。
+# 它们将配置与应用代码分离，允许
+# 针对不同环境配置而无需重建镜像。
+#
+# 学习目标:
+# - 理解 ConfigMap 的配置管理功能
+# - 通过环境变量注入配置
+# - 在不重建镜像的情况下更新配置
+# - 通过配置变更触发滚动更新
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: model-config
+  namespace: ml-serving
+  labels:
+    app: model-api
+    version: v1.0
+
+  # 添加用于变更追踪的注解(annotation)
+  # 某些工具（如 Reloader）会监控 ConfigMap 变更并在更改时重启 Pod
+  annotations:
+    # 添加描述性注解
+    description: "模型服务 API 的配置"
+
+# ========================================================================
+# 配置信息数据部分
+# ========================================================================
+
+data:
+  # TODO: 设置 model_name - 启动时加载哪个模型
+  # 常用值: "resnet50", "bert-base", "gpt2"
+  # 应用通过环境变量 MODEL_NAME 读取该值
+  model_name: "resnet50"  # TODO: 设为 "resnet50" 或你选择的模型
+  
+  # 设置 log_level - 日志详细程度
+  # 可选："DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
+  # 生产环境用 INFO，开发调试用 DEBUG
+  log_level: "INFO"  # 为 "INFO"
+  
+  # 设置 max_batch_size - 最大推理批量大小
+  # 批量大 = 更好 GPU 利用率，但延迟更高
+  # 推荐：实时服务 16-32，批处理 64-128
+  max_batch_size: "32"  # 为 "32"
+  
+  # 添加超时配置
+  # 请求超时时间（秒）
+  timeout: "60"
+
+  # 添加 Gunicorn 工作进程数配置（可选）
+  # 工作进程数量
+  # 公式：(2 * CPU核数) + 1
+  workers: "5"
+
+  # 根据需要添加其他配置项
+  # 示例：
+  model_version: "1.0"
+  cache_enabled: "true"
+  cache_ttl: "3600"
+  metrics_enabled: "true"
+
+---
+
+# ============================================================================
+# 另一种方式：通过文件创建 ConfigMap
+# ============================================================================
+
+# 你还可以通过文件创建 ConfigMap：
+#   kubectl create configmap model-config \
+#     --from-file=config.json \
+#     --from-file=model-config.yaml \
+#     -n ml-serving
+
+# 示例 config.json:
+# {
+#   "model_name": "resnet50",
+#   "log_level": "INFO",
+#   "max_batch_size": 32
+# }
+
+# 作为数据卷挂载方法示例：
+# volumes:
+# - name: config-volume
+#   configMap:
+#     name: model-config
+#
+# volumeMounts:
+# - name: config-volume
+#   mountPath: /etc/config
+#   readOnly: true
+
+---
+
+# ============================================================================
+# ConfigMap 使用说明
+# ============================================================================
+
+# 1. 应用本 ConfigMap（必须在 Deployment 之前创建）：
+#    kubectl apply -f configmap.yaml -n ml-serving
+
+# 2. 验证 ConfigMap：
+#    kubectl get configmap model-config -n ml-serving
+#    kubectl describe configmap model-config -n ml-serving
+
+# 3. 查看 ConfigMap 数据：
+#    kubectl get configmap model-config -n ml-serving -o yaml
+
+# 4. 更新 ConfigMap：
+#    kubectl edit configmap model-config -n ml-serving
+#    # 或直接应用更新后的 YAML 文件
+
+# 5. 验证 Pod 是否使用了 ConfigMap：
+#    kubectl exec <pod-name> -n ml-serving -- env | grep MODEL_NAME
+#    kubectl exec <pod-name> -n ml-serving -- env | grep LOG_LEVEL
+
+# ============================================================================
+# ConfigMap 更新相关
+# ============================================================================
+
+# 更新 ConfigMap 方法：
+
+# 方法一：直接编辑
+#   kubectl edit configmap model-config -n ml-serving
+#   # 更改即生效，但 Pod 不会自动重启
+
+# 方法二：应用更新后的 YAML
+#   # 编辑本文件，然后：
+#   kubectl apply -f configmap.yaml -n ml-serving
+
+# 方法三：使用 kubectl patch 命令
+#   kubectl patch configmap model-config -n ml-serving \
+#     --type merge \
+#     -p '{"data":{"log_level":"DEBUG"}}'
+
+# 重要提示: ConfigMap 变更后 Pod 不会自动重启！
+
+# 解决办法：
+# 1. 手动重启：
+#    kubectl rollout restart deployment/model-api -n ml-serving
+
+# 2. 使用 Reloader (https://github.com/stakater/Reloader)
+#    自动在 ConfigMap 更改时重启 Pod
+#    在 Deployment 加注解：
+#    reloader.stakater.com/auto: "true"
+
+# 3. 在 Deployment 注解中增加 ConfigMap hash（强制重建 Pod）
+#    添加到 Deployment template.metadata.annotations：
+#    checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+
+# ============================================================================
+# 环境变量注入
+# ============================================================================
+
+# 三种方式使用 ConfigMap：
+
+# 1. 单独作为环境变量注入（本项目推荐）
+# env:
+# - name: MODEL_NAME
+#   valueFrom:
+#     configMapKeyRef:
+#       name: model-config
+#       key: model_name
+
+# 2. 全部 ConfigMap 键注入为环境变量
+# envFrom:
+# - configMapRef:
+#     name: model-config
+# # 会创建环境变量：model_name, log_level, max_batch_size
+
+# 3. 以数据卷形式挂载（用于文件）
+# volumes:
+# - name: config
+#   configMap:
+#     name: model-config
+# volumeMounts:
+# - name: config
+#   mountPath: /etc/config
+
+# ============================================================================
+# ConfigMap 与 Secret 的区别
+# ============================================================================
+
+# 适合用 ConfigMap 存储：
+# - 非敏感配置信息
+# - 应用设置
+# - 功能开关
+# - 针对不同环境的配置
+# 示例: log_level, timeout, batch_size
+
+# 适合用 Secret 存储：
+# - 密码
+# - API 密钥
+# - TLS 证书
+# - Token
+# 示例: 数据库密码, API 令牌
+
+# 关键区别: Secret 是 base64 编码（不是加密！）
+# 如需加密，建议：
+# - Sealed Secrets
+# - 外部 Secrets Operator
+# - 云厂商 secret 管理工具（如 AWS/GCP Secret Manager）
+
+# ============================================================================
+# ConfigMap 最佳实践
+# ============================================================================
+
+# 1. 命名空间隔离：
+#    - 每个应用每个环境一个 ConfigMap
+#    - 建议命名：<app>-config-<env>（如 model-api-config-prod）
+
+# 2. 版本管理：
+#    - 在 metadata.labels 标注版本
+#    - 如不可变配置，可在名字中加哈希
+#    - 如：model-config-v2-abc123
+
+# 3. 文档化：
+#    - 对每一项配置写明注释
+#    - 给出可选值与默认值
+#    - 记录不同环境下的区别
+
+# 4. 大小限制：
+#    - ConfigMap 单个最大为 1MB
+#    - 如配置较大，建议用卷挂载或外部存储
+
+# 5. 校验：
+#    - 应用启动时校验配置有效性
+#    - 必须项缺失或配置非法应立即失败
+#    - 启动时打印配置内容（敏感项需脱敏！）
+
+# ============================================================================
+# 示例：按环境区分的 ConfigMap
+# ============================================================================
+
+# 开发环境 ConfigMap：
+# data:
+#   model_name: "tiny-model"  # 启动更快
+#   log_level: "DEBUG"        # 日志更详细
+#   max_batch_size: "8"       # 批量更小
+
+# 生产环境 ConfigMap：
+# data:
+#   model_name: "resnet50"    # 标准模型
+#   log_level: "INFO"         # 标准日志级别
+#   max_batch_size: "32"      # 批量优化
+
+# ============================================================================
+# 故障排查
+# ============================================================================
+
+# 找不到 ConfigMap：
+#   kubectl get configmap -n ml-serving
+#   # 检查 namespace 是否正确
+
+# Pod 无法读取 ConfigMap:
+#   kubectl describe pod <pod-name> -n ml-serving
+#   # 查看 Events 里是否有 “ConfigMap not found” 错误
+#   # 确认 ConfigMap 在创建 Deployment 前已存在
+
+# 环境变量未设置:
+#   kubectl exec <pod-name> -n ml-serving -- env
+#   # 检查 ConfigMap key 名是否和 Deployment 里一致
+
+# ConfigMap 更新未生效：
+#   # 环境变量方式：需要重启 Pod
+#   kubectl rollout restart deployment/model-api -n ml-serving
+#
+#   # 数据卷方式：更新有一定延迟（kubelet同步，大约1分钟）
+#   kubectl exec <pod-name> -n ml-serving -- cat /etc/config/model_name
+
+# ============================================================================
+# 学习检查点
+# ============================================================================
+
+# 完成本文件后你应该掌握：
+# ✓ ConfigMap 的作用及适用场景
+# ✓ 如何通过 YAML 创建 ConfigMap
+# ✓ 如何作为环境变量注入 ConfigMap 内容
+# ✓ ConfigMap与Secret的区别及应用场景
+# ✓ ConfigMap 更新方式
+# ✓ ConfigMap 大小限制及最佳实践
+# ✓ 为什么 ConfigMap 变动不会自动重启 Pod

@@ -1,0 +1,424 @@
+# Kubernetes Horizontal Pod Autoscaler (HPA)
+# Kubernetes 水平 Pod 自动伸缩器 (HPA)
+#
+# HPA 根据观测到的指标（CPU、内存或自定义指标）自动伸缩 Pod 数量。
+# 这使得应用程序能够在无需人工干预的情况下处理变化的负载。
+#
+# 学习目标：
+# - 理解自动伸缩概念
+# - 配置基于 CPU 和内存的伸缩
+# - 设置伸缩策略（扩容和缩容行为）
+# - 通过稳定窗口防止伸缩抖动
+
+apiVersion: autoscaling/v2  # 使用 v2 版本以支持高级功能（多指标、行为配置）
+kind: HorizontalPodAutoscaler
+metadata:
+  name: model-api-hpa
+  namespace: ml-serving
+  labels:
+    app: model-api
+    component: autoscaler  # 自动伸缩组件
+
+spec:
+  # ========================================================================
+  # 目标 Deployment
+  # ========================================================================
+
+  # 配置要伸缩的 Deployment
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    #  设置 name 与你的 Deployment 匹配（model-api）
+    name: "model-api" 
+
+  # ========================================================================
+  # 副本数量限制
+  # ========================================================================
+
+  # 设置最小副本数为 3
+  # 最小值确保即使在低负载时也有高可用性
+  # 有 3 个副本时，可以容忍滚动更新期间 1 个 Pod 故障
+  minReplicas: 3  
+
+  #  设置最大副本数为 10
+  # 最大值防止无限伸缩并控制成本
+  # 设置最大值时请考虑集群容量
+  maxReplicas: 10  
+
+  # ========================================================================
+  # 指标
+  # ========================================================================
+
+  # 配置触发伸缩的指标
+  # HPA 会评估所有指标并伸缩以满足所有目标
+  # （使用任何指标中最高的期望副本数）
+
+  metrics:
+  # -----------------------------------------------------------------------
+  # CPU 指标
+  # -----------------------------------------------------------------------
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        # TODO: 设置目标 CPU 利用率为 70%
+        # 当所有 Pod 的平均 CPU 超过 70% 时扩容
+        # 公式：desiredReplicas = ceil(currentReplicas * currentCPU / targetCPU)
+        # 示例：3 个副本在 85% → ceil(3 * 85 / 70) = ceil(3.64) = 4 个副本
+        averageUtilization: 70  # 70%
+
+  # 问题：为什么是 70% 而不是 80% 或 90%？
+  # 答案：70% 在伸缩发生时为流量峰值提供了缓冲空间。
+  # 较低的阈值 = 响应更快但可能成本更高。
+  # 较高的阈值 = 响应较慢，有过载风险。
+
+  # -----------------------------------------------------------------------
+  # 内存指标（注释掉，避免与 CPU 指标冲突）
+  # -----------------------------------------------------------------------
+  # - type: Resource
+  #   resource:
+  #     name: memory
+  #     target:
+  #       type: Utilization
+  #       # TODO: 设置目标内存利用率为 80%
+  #       # 内存阈值比 CPU 高的原因：
+  #       # - 内存使用更稳定（不会快速峰值）
+  #       # - 扩容不会立即释放内存（需要垃圾回收）
+  #       averageUtilization: 80  # 80%
+
+  # -----------------------------------------------------------------------
+  # 自定义指标（高级 - 可选）
+  # -----------------------------------------------------------------------
+
+  # （可选）准备好后添加自定义指标
+  # 需要 metrics-server 和自定义指标 API
+
+  # 示例：基于请求速率伸缩
+  # - type: Pods
+  #   pods:
+  #     metric:
+  #       name: http_requests_per_second
+  #     target:
+  #       type: AverageValue
+  #       averageValue: "100"  # 如果每个 Pod > 100 请求/秒则扩容
+
+  # 示例：基于队列深度伸缩
+  # - type: Object
+  #   object:
+  #     metric:
+  #       name: queue_depth
+  #     describedObject:
+  #       apiVersion: v1
+  #       kind: Service
+  #       name: rabbitmq
+  #     target:
+  #       type: Value
+  #       value: "1000"  # 如果队列 > 1000 条消息则扩容
+
+  # ========================================================================
+  # 伸缩行为
+  # ========================================================================
+
+  #  配置伸缩行为以防止抖动
+  # 抖动：快速上下伸缩，浪费资源并造成不稳定
+
+  behavior:
+    # ---------------------------------------------------------------------
+    # 扩容行为（激进）
+    # ---------------------------------------------------------------------
+    scaleUp:
+      #  设置稳定窗口为 0 秒
+      # 超过阈值时立即扩容
+      # 扩容无需等待期（快速响应负载）
+      stabilizationWindowSeconds: 0  
+
+      #  配置扩容策略
+      # 可以定义多个策略；HPA 根据 selectPolicy 选择
+      policies:
+      # 策略 1：基于百分比的伸缩
+      - type: Percent
+        #  设置值为 100（可以使 Pod 数量翻倍）
+        # 示例：3 个 Pod → 可以一步扩容到 6 个 Pod
+        value: 100  
+        # TODO: 设置周期为 30 秒
+        # 每 30 秒可以应用一次此策略
+        periodSeconds: 30  
+
+      # 策略 2：绝对 Pod 数量伸缩
+      - type: Pods
+        #  设置值为 2（最多可以添加 2 个 Pod）
+        # 提供扩容速率的绝对限制
+        value: 2  
+        # 设置周期为 30 秒
+        periodSeconds: 30  
+
+      #  设置选择策略为 Max
+      # 选项：
+      # - Max: 使用允许最大伸缩的策略（激进）
+      # - Min: 使用允许最小伸缩的策略（保守）
+      # - Disabled: 不伸缩
+      selectPolicy: "Max"  
+
+    # 为什么要激进的扩容？
+    # - 快速响应流量峰值防止服务降级
+    # - 与糟糕的用户体验相比，额外 Pod 的成本很低
+    # - 负载稳定后 Pod 可以缩容
+
+    # ---------------------------------------------------------------------
+    # 缩容行为（保守）
+    # ---------------------------------------------------------------------
+    scaleDown:
+      # 设置稳定窗口为 300 秒（5 分钟）
+      # 缩容前等待 5 分钟以避免抖动
+      # 确保在移除容量前负载真正下降
+      stabilizationWindowSeconds: 300  
+
+      #  配置缩容策略
+      policies:
+      # 策略 1：基于百分比的伸缩
+      - type: Percent
+        #  设置值为 50（最多可以移除 50% 的 Pod）
+        # 示例：6 个 Pod → 可以一步缩容到 3 个 Pod
+        # 比扩容更保守（100%）
+        value: 50  
+        #  设置周期为 60 秒
+        # 每 60 秒可以应用一次此策略（比扩容慢）
+        periodSeconds: 60  
+
+      #  设置选择策略为 Max
+      # 即使是缩容，Max 也是典型的（允许更激进的策略）
+      selectPolicy: "Max"  
+
+    # 为什么要保守的缩容？
+    # - 流量可能很快再次峰值（避免抖动）
+    # - 多运行几分钟 Pod 的成本很低
+    # - 防止振荡（快速的上下伸缩循环）
+
+  # ========================================================================
+  # 行为总结
+  # ========================================================================
+
+  # 扩容：
+  #   - 立即（无稳定窗口）
+  #   - 可以使 Pod 数量翻倍 或 添加 2 个 Pod（取较大者）
+  #   - 每 30 秒响应一次
+  #   - 示例：在持续负载下，3 → 6 → 10（最大）约 1 分钟
+
+  # 缩容：
+  #   - 负载下降后等待 5 分钟
+  #   - 最多可以移除 50% 的 Pod
+  #   - 每 60 秒响应一次
+  #   - 示例：负载下降后，10 → 5 → 3（最小）约 6 分钟
+
+---
+
+# ============================================================================
+# HPA 使用说明
+# ============================================================================
+
+# 前置条件：
+# 1. 必须安装 Metrics Server
+#    对于 Minikube：minikube addons enable metrics-server
+#    对于云环境：kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+# 2. Deployment 必须定义资源请求
+#    HPA 基于请求（requests）而非限制（limits）计算百分比
+#    参见 deployment.yaml 的 resources.requests 部分
+
+# 应用 HPA：
+#   kubectl apply -f hpa.yaml -n ml-serving
+
+# 验证 HPA：
+#   kubectl get hpa -n ml-serving
+#   kubectl describe hpa model-api-hpa -n ml-serving
+
+# 实时监控 HPA：
+#   kubectl get hpa model-api-hpa -n ml-serving --watch
+
+# 检查当前指标：
+#   kubectl top pods -n ml-serving
+#   kubectl top nodes
+
+# ============================================================================
+# 测试自动伸缩
+# ============================================================================
+
+# 测试 1：生成 CPU 负载
+#   # 创建负载生成器 Pod
+#   kubectl run load-generator --image=busybox -n ml-serving -- \
+#     /bin/sh -c "while true; do wget -q -O- http://model-api-service/predict; done"
+
+#   # 或使用多个负载生成器
+#   kubectl run load-generator-{1..5} --image=busybox -n ml-serving -- \
+#     /bin/sh -c "while true; do wget -q -O- http://model-api-service/predict; done"
+
+#   # 观察 HPA 扩容
+#   kubectl get hpa model-api-hpa -n ml-serving --watch
+
+#   # 观察 Pod 伸缩
+#   kubectl get pods -n ml-serving --watch
+
+# 测试 2：使用负载测试工具（k6、Apache Bench、wrk）
+#   # 安装 k6：https://k6.io/docs/getting-started/installation/
+#   k6 run --vus 50 --duration 5m load-test.js
+
+#   # 运行时监控 HPA 和 Pod
+#   watch 'kubectl get hpa,pods -n ml-serving'
+
+# 测试 3：验证缩容
+#   # 停止负载生成器
+#   kubectl delete pod load-generator -n ml-serving
+
+#   # 观察 HPA 等待 5 分钟后缩容
+#   kubectl get hpa model-api-hpa -n ml-serving --watch
+
+# ============================================================================
+# HPA 决策逻辑
+# ============================================================================
+
+# HPA 如何计算期望副本数：
+
+# 1. 从所有 Pod 收集指标
+#    currentCPU = 所有 Pod 的平均 CPU
+
+# 2. 计算期望副本数
+#    desiredReplicas = ceil(currentReplicas * (currentCPU / targetCPU))
+
+# 3 个副本的示例：
+#   当前：3 个 Pod，CPU 85%
+#   目标：70% CPU
+#   计算：ceil(3 * (85 / 70)) = ceil(3.64) = 4 个副本
+#   操作：从 3 个扩容到 4 个 Pod
+
+# 6 个副本的示例：
+#   当前：6 个 Pod，CPU 45%
+#   目标：70% CPU
+#   计算：ceil(6 * (45 / 70)) = ceil(3.86) = 4 个副本
+#   但是：稳定窗口防止立即缩容
+#   操作：等待 5 分钟，然后从 6 个缩容到 4 个 Pod
+
+# 3. 应用约束
+#    - 限制在 minReplicas (3) 和 maxReplicas (10) 之间
+#    - 应用伸缩策略（每 30 秒扩容最多 2 个 Pod）
+#    - 应用稳定窗口（缩容 5 分钟）
+
+# 4. 更新 Deployment
+#    HPA 更新 deployment.spec.replicas
+#    Deployment 控制器创建/删除 Pod
+
+# ============================================================================
+# HPA 指标收集
+# ============================================================================
+
+# 指标流程：
+# 1. Metrics Server 从 kubelets 收集资源指标
+# 2. HPA 每 15 秒（默认）查询 Metrics Server API
+# 3. HPA 计算期望副本数
+# 4. HPA 在需要时更新 Deployment
+
+# 手动检查指标：
+#   kubectl top pods -n ml-serving
+#   kubectl top nodes
+
+# 查看原始指标：
+#   kubectl get --raw /apis/metrics.k8s.io/v1beta1/namespaces/ml-serving/pods
+
+# ============================================================================
+# 故障排查
+# ============================================================================
+
+# HPA 显示 "unknown" 指标：
+#   # 检查 Metrics Server 是否运行
+#   kubectl get deployment metrics-server -n kube-system
+
+#   # 检查 Metrics Server 日志
+#   kubectl logs -n kube-system deployment/metrics-server
+
+#   # 验证指标是否可用
+#   kubectl top pods -n ml-serving
+
+# HPA 不伸缩：
+#   1. 检查当前指标与目标
+#      kubectl describe hpa model-api-hpa -n ml-serving
+#
+#   2. 验证 Deployment 中设置了资源请求
+#      kubectl get deployment model-api -n ml-serving -o yaml | grep -A 8 resources
+#
+#   3. 检查 HPA 事件
+#      kubectl describe hpa model-api-hpa -n ml-serving | tail -20
+
+# HPA 伸缩太慢：
+#   - 减小 scaleUp 的 stabilizationWindowSeconds
+#   - 增加策略值（允许更激进的伸缩）
+#   - 降低目标利用率阈值
+
+# HPA 抖动（快速上下）：
+#   - 增加 scaleDown 的 stabilizationWindowSeconds
+#   - 使 scaleDown 策略更保守
+#   - 检查应用是否有内存泄漏导致重复 OOM
+
+# Pod 没有指标：
+#   - 验证 Pod 定义了资源请求
+#   - Pod 创建后等待 60 秒让指标出现
+#   - 检查 metrics-server 是否能访问 kubelets
+
+# ============================================================================
+# HPA 高级功能
+# ============================================================================
+
+# 1. 自定义指标
+#    需要：自定义指标 API（Prometheus Adapter、Datadog 等）
+#    示例：基于队列深度、请求速率、自定义应用指标伸缩
+
+# 2. 外部指标
+#    需要：外部指标 API
+#    示例：基于 AWS SQS 队列长度、云提供商指标伸缩
+
+# 3. 多个 HPA（高级）
+#    可以为不同时段创建多个 HPA
+#    使用不同的命名空间或标签选择器
+
+# 4. 垂直 Pod 自动伸缩器 (VPA)
+#    通过调整资源请求/限制来补充 HPA
+#    不建议在同一资源上同时使用 VPA 和 HPA（可能冲突）
+
+# ============================================================================
+# 最佳实践
+# ============================================================================
+
+# 1. 设置合适的 min/max 副本数
+#    - 最小值：足够高可用（通常 2-3 个）
+#    - 最大值：在集群容量和预算内
+
+# 2. 保守的阈值
+#    - 从 70-80% CPU 目标开始
+#    - 根据实际负载模式监控并调整
+
+# 3. 测试伸缩行为
+#    - 运行负载测试验证伸缩
+#    - 测量扩容时间（应 < 2 分钟）
+#    - 验证缩容不会太快发生
+
+# 4. 监控伸缩事件
+#    - 为伸缩事件设置告警
+#    - 跟踪伸缩频率（过度 = 抖动）
+#    - 定期审查 HPA 决策
+
+# 5. 考虑自定义指标
+#    - CPU/内存并不总能反映应用负载
+#    - 请求速率、队列深度通常是更好的指标
+#    - 掌握基于资源的伸缩后再实现自定义指标
+
+# ============================================================================
+# 学习检查点
+# ============================================================================
+
+# 完成本文件后你应该理解：
+# ✓ HPA 如何做出伸缩决策
+# ✓ 扩容和缩容策略的区别
+# ✓ 稳定窗口的作用
+# ✓ 如何防止伸缩抖动
+# ✓ 资源请求与 HPA 的关系
+# ✓ 通过 Metrics Server 收集指标
+# ✓ 测试和调试自动伸缩行为

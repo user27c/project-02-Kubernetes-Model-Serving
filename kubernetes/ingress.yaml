@@ -1,0 +1,460 @@
+# Kubernetes Ingress
+# Kubernetes 入口
+#
+# Ingress 管理集群外部对服务的 HTTP(S) 访问。
+# 它提供负载均衡、SSL 终止和基于域名的虚拟主机。
+#
+# 学习目标：
+# - 理解 Ingress 与 LoadBalancer Service 的区别
+# - 配置 NGINX Ingress Controller
+# - 设置基于路径和基于域名的路由
+# - 实现 SSL/TLS 终止（可选）
+# - 配置速率限制和请求缓冲
+
+# ============================================================================
+# INGRESS 资源
+# ============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: model-api-ingress
+  namespace: ml-serving
+  labels:
+    app: model-api
+    component: ingress
+
+  # ========================================================================
+  # 注解（NGINX Ingress Controller 特定）
+  # ========================================================================
+
+  # 配置 NGINX Ingress 行为的注解
+  # 注解控制 NGINX 如何处理请求
+  annotations:
+    #  设置 ingress class 为 nginx
+    # 告诉 Kubernetes 哪个 Ingress Controller 处理这个 Ingress
+    # kubernetes.io/ingress.class: "nginx"  # 在 v1.18+ 已弃用
+    # 现在使用 spec.ingressClassName 代替（见下方）
+
+    #  启用 SSL 重定向（HTTP → HTTPS）
+    # 配置 SSL/TLS 后取消注释
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # TODO: 配置速率限制
+    # 限制：每个 IP 每秒 100 个请求
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+
+    #  配置请求大小限制
+    # 最大请求体大小：10MB（默认 1MB）
+    # 对于带有大输入的模型推理需要增加
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    #  配置超时时间
+    # 为长时间运行的模型推理增加超时
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+    # TODO: 启用 CORS（如果要服务基于浏览器的客户端）
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+
+    # TODO: 配置负载均衡算法
+    # 选项：round_robin（默认）、least_conn、ip_hash
+    nginx.ingress.kubernetes.io/load-balance: "round_robin"
+
+    #  添加监控注解
+    nginx.ingress.kubernetes.io/enable-metrics: "true"
+
+    # Certificate Manager 注解（如果使用 cert-manager）
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # cert-manager.io/acme-challenge-type: "http01"
+
+    placeholder: delete-me  # TODO: 添加注解后移除此项
+
+spec:
+  # ========================================================================
+  # INGRESS 类别
+  # ========================================================================
+
+  # TODO: 设置 ingress class 名称为 nginx
+  # 指定哪个 Ingress Controller 处理这个 Ingress
+  # 替代已弃用的 kubernetes.io/ingress.class 注解
+  ingressClassName: "nginx"
+
+  # ========================================================================
+  # TLS 配置（可选）
+  # ========================================================================
+
+  # TODO: 配置 TLS/SSL（准备好后取消注释）
+  # 需要：
+  # - TLS 证书（来自 cert-manager 或手动创建的 Secret）
+  # - DNS 配置指向 Ingress IP
+
+  tls:
+  - hosts:
+    - model-api.example.com
+    # TODO: 设置包含 TLS 证书的 secret 名称
+    secretName: "model-api-tls"
+
+  # 手动创建 TLS Secret：
+    # kubectl create secret tls model-api-tls \
+    #   --cert=path/to/cert.crt \
+    #   --key=path/to/cert.key \
+    #   -n ml-serving
+
+  # 使用 cert-manager（自动证书管理）：
+  #   安装 cert-manager：https://cert-manager.io/docs/installation/
+  #   为 Let's Encrypt 创建 ClusterIssuer
+  #   添加注解：cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  #   cert-manager 自动创建和续订证书
+
+  # ========================================================================
+  # 路由规则
+  # ========================================================================
+
+  rules:
+  #  为你的域名配置路由规则
+  - host: "model-api.local"  # TODO: 设置为 "model-api.example.com"（或你的域名）
+    # 本地测试使用 Minikube 可用：model-api.local
+    # 添加到 /etc/hosts：<minikube-ip> model-api.local
+
+    http:
+      paths:
+      # -------------------------------------------------------------------
+      # 路径：/predict（模型推理端点）
+      # -------------------------------------------------------------------
+      - path: /predict
+        # TODO: 设置 pathType 为 Prefix
+        # 选项：
+        # - Prefix: 匹配路径前缀（例如 /predict 匹配 /predict/*）
+        # - Exact: 仅精确匹配路径
+        # - ImplementationSpecific: 取决于 Ingress Controller
+        pathType: "Prefix"  # TODO: 设置为 "Prefix"
+        
+        backend:
+          service:
+            # TODO: 设置服务名称为 model-api-service
+            name: "model-api-service"  # TODO: 设置为 "model-api-service"
+            port:
+              # TODO: 设置端口号为 80
+              number: 80  # TODO: 设置为 80
+
+      # -------------------------------------------------------------------
+      # 路径：/health（健康检查端点）
+      # -------------------------------------------------------------------
+      - path: /health
+        pathType: "Prefix"  # TODO: 设置为 "Prefix"
+        backend:
+          service:
+            name: "model-api-service"  # TODO: 设置为 "model-api-service"
+            port:
+              number: 80  # TODO: 设置为 80
+
+      # -------------------------------------------------------------------
+      # 路径：/metrics（Prometheus 指标端点）
+      # -------------------------------------------------------------------
+      - path: /metrics
+        pathType: "Prefix"  # TODO: 设置为 "Prefix"
+        backend:
+          service:
+            name: "model-api-service"  # TODO: 设置为 "model-api-service"
+            port:
+              number: 80  # TODO: 设置为 80
+
+      # -------------------------------------------------------------------
+      # 路径：/（根端点 - API 信息）
+      # -------------------------------------------------------------------
+      - path: /
+        pathType: "Prefix"  # TODO: 设置为 "Prefix"
+        backend:
+          service:
+            name: "model-api-service"  # TODO: 设置为 "model-api-service"
+            port:
+              number: 80  # TODO: 设置为 80
+
+  # ========================================================================
+  # 额外的路由规则（可选）
+  # ========================================================================
+
+  # 多个主机（虚拟主机）：
+  # - host: "api.example.com"
+  #   http:
+  #     paths:
+  #     - path: /v1
+  #       pathType: Prefix
+  #       backend:
+  #         service:
+  #           name: model-api-v1
+  #           port:
+  #             number: 80
+  #
+  # - host: "api-staging.example.com"
+  #   http:
+  #     paths:
+  #     - path: /
+  #       pathType: Prefix
+  #       backend:
+  #         service:
+  #           name: model-api-staging
+  #           port:
+  #             number: 80
+
+---
+
+# ============================================================================
+# 默认后端（可选）
+# ============================================================================
+
+# 默认后端处理不匹配任何规则的请求
+# 用于自定义 404 页面或回退服务
+
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: default-backend
+#   namespace: ml-serving
+# spec:
+#   selector:
+#     app: default-backend
+#   ports:
+#   - port: 80
+#     targetPort: 8080
+
+---
+
+# ============================================================================
+# INGRESS 使用说明
+# ============================================================================
+
+# 前置条件：
+
+# 1. 安装 NGINX Ingress Controller
+#
+#    对于 Minikube：
+#      minikube addons enable ingress
+#
+#    对于云集群（Helm）：
+#      helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+#      helm repo update
+#      helm install nginx-ingress ingress-nginx/ingress-nginx \
+#        --namespace ingress-nginx --create-namespace
+
+# 2. 验证 Ingress Controller 是否在运行：
+#      kubectl get pods -n ingress-nginx
+#      kubectl get svc -n ingress-nginx
+
+# 应用 Ingress：
+#   kubectl apply -f ingress.yaml -n ml-serving
+
+# 验证 Ingress：
+#   kubectl get ingress -n ml-serving
+#   kubectl describe ingress model-api-ingress -n ml-serving
+
+# 获取 Ingress IP/主机名：
+#   kubectl get ingress model-api-ingress -n ml-serving
+#   # 查看 ADDRESS 列
+
+# ============================================================================
+# DNS 配置
+# ============================================================================
+
+# 生产环境（云）：
+#   1. 获取 Ingress LoadBalancer IP：
+#      INGRESS_IP=$(kubectl get ingress model-api-ingress -n ml-serving \
+#        -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+#
+#   2. 创建 DNS A 记录：
+#      model-api.example.com → $INGRESS_IP
+#
+#   3. 等待 DNS 传播（可能需要 5-60 分钟）
+#
+#   4. 验证：
+#      nslookup model-api.example.com
+#      curl http://model-api.example.com/health
+
+# 本地测试（Minikube）：
+#   1. 获取 Minikube IP：
+#      minikube ip
+#
+#   2. 添加到 /etc/hosts：
+#      echo "$(minikube ip) model-api.local" | sudo tee -a /etc/hosts
+#
+#   3. 测试：
+#      curl http://model-api.local/health
+
+# ============================================================================
+# 测试 Ingress
+# ============================================================================
+
+# 测试 1：健康检查
+#   curl http://model-api.example.com/health
+#   # 预期：{"status": "healthy", ...}
+
+# 测试 2：推理端点
+#   curl -X POST http://model-api.example.com/predict \
+#     -H "Content-Type: application/json" \
+#     -d '{"instances": [[1,2,3,4,5]]}'
+
+# 测试 3：HTTPS（如果配置了 TLS）
+#   curl https://model-api.example.com/health
+
+# 测试 4：速率限制
+#   # 发送快速请求触发速率限制
+#   for i in {1..200}; do
+#     curl -s -o /dev/null -w "%{http_code}\n" http://model-api.example.com/health
+#   done
+#   # 应该看到一些 429（请求过多）响应
+
+# 测试 5：检查 Ingress 日志
+#   kubectl logs -n ingress-nginx deployment/nginx-ingress-controller
+
+# ============================================================================
+# Ingress 与 LoadBalancer Service 对比
+# ============================================================================
+
+# LoadBalancer Service：
+#   优点：
+#   - 配置简单
+#   - 工作在 L4（TCP/UDP）
+#   - 无需额外组件
+#
+#   缺点：
+#   - 每个 Service 需要一个 LoadBalancer（昂贵！）
+#   - 没有 HTTP 路由（基于路径、基于主机）
+#   - 没有 SSL/TLS 终止
+#   - 没有速率限制或高级功能
+
+# Ingress：
+#   优点：
+#   - 多个服务共享一个 LoadBalancer（成本效益高）
+#   - HTTP 路由（路径、主机、头信息）
+#   - SSL/TLS 终止
+#   - 速率限制、请求缓冲等
+#   - 标准 Kubernetes 资源
+#
+#   缺点：
+#   - 需要安装 Ingress Controller
+#   - 配置更复杂
+#   - 仅 HTTP/HTTPS（TCP/UDP 使用 LoadBalancer）
+
+# 建议：
+#   - 对 HTTP(S) 服务使用 Ingress（大多数 API）
+#   - 对非 HTTP 协议使用 LoadBalancer（数据库、消息队列）
+
+# ============================================================================
+# NGINX Ingress 功能
+# ============================================================================
+
+# 速率限制：
+#   nginx.ingress.kubernetes.io/limit-rps: "100"           # 每秒请求数
+#   nginx.ingress.kubernetes.io/limit-connections: "10"    # 并发连接数
+#   nginx.ingress.kubernetes.io/limit-rpm: "6000"          # 每分钟请求数
+
+# 认证：
+#   nginx.ingress.kubernetes.io/auth-type: "basic"
+#   nginx.ingress.kubernetes.io/auth-secret: "basic-auth"
+#   nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+
+# 重定向：
+#   nginx.ingress.kubernetes.io/permanent-redirect: "https://newdomain.com"
+
+# 重写：
+#   nginx.ingress.kubernetes.io/rewrite-target: /$2
+#   # 配合路径：/api(/|$)(.*)
+#   # /api/predict → /predict
+
+# 自定义头：
+#   nginx.ingress.kubernetes.io/configuration-snippet: |
+#     more_set_headers "X-Custom-Header: value";
+
+# 白名单：
+#   nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12"
+
+# ============================================================================
+# 使用 cert-manager 实现 SSL/TLS
+# ============================================================================
+
+# 安装 cert-manager：
+#   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml
+
+# 创建 ClusterIssuer：
+#   apiVersion: cert-manager.io/v1
+#   kind: ClusterIssuer
+#   metadata:
+#     name: letsencrypt-prod
+#   spec:
+#     acme:
+#       server: https://acme-v02.api.letsencrypt.org/directory
+#       email: your-email@example.com
+#       privateKeySecretRef:
+#         name: letsencrypt-prod
+#       solvers:
+#       - http01:
+#           ingress:
+#             class: nginx
+
+# 添加到 Ingress 注解：
+#   cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+# cert-manager 自动：
+#   - 创建 TLS Secret
+#   - 从 Let's Encrypt 获取证书
+#   - 在过期前续订证书
+
+# ============================================================================
+# 故障排查
+# ============================================================================
+
+# Ingress 没有显示 ADDRESS：
+#   - 检查 Ingress Controller 是否在运行
+#   kubectl get pods -n ingress-nginx
+#
+#   - 检查 Ingress Controller Service 是否有外部 IP
+#   kubectl get svc -n ingress-nginx
+
+# 404 Not Found：
+#   - 验证 Ingress 中的 Service 名称和端口与 Service 清单匹配
+#   kubectl get svc -n ml-serving
+#
+#   - 检查 Service 端点是否已填充
+#   kubectl get endpoints model-api-service -n ml-serving
+#
+#   - 检查 Ingress 规则
+#   kubectl describe ingress model-api-ingress -n ml-serving
+
+# 502 Bad Gateway：
+#   - 后端 Pod 未就绪
+#   kubectl get pods -n ml-serving
+#
+#   - Service 选择器不匹配 Pod
+#   kubectl get svc model-api-service -n ml-serving -o yaml
+
+# TLS 证书问题：
+#   - 检查 Secret 是否存在
+#   kubectl get secret model-api-tls -n ml-serving
+#
+#   - 检查证书有效性
+#   kubectl describe secret model-api-tls -n ml-serving
+#
+#   - 如果使用 cert-manager，检查其日志
+#   kubectl logs -n cert-manager deployment/cert-manager
+
+# 检查 Ingress Controller 日志：
+#   kubectl logs -n ingress-nginx deployment/nginx-ingress-controller -f
+
+# ============================================================================
+# 学习检查点
+# ============================================================================
+
+# 完成本文件后你应该理解：
+# ✓ Ingress 的目的（L7 负载均衡）
+# ✓ Ingress 与 LoadBalancer Service 的区别
+# ✓ 基于路径和基于域名的路由
+# ✓ NGINX Ingress Controller 注解
+# ✓ SSL/TLS 终止
+# ✓ 速率限制和安全功能
+# ✓ Ingress 的 DNS 配置
+# ✓ cert-manager 用于自动证书管理

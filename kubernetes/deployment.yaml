@@ -89,24 +89,28 @@ spec:
 
     spec:
       # ====================================================================
-      # 容器配置
+      # 卷配置（共享主机缓存）
       # ====================================================================
+      volumes:
+        - name: model-cache
+          hostPath:
+            path: /home/22-7/.cache/huggingface  # 宿主机缓存目录
+            type: DirectoryOrCreate
 
       containers:
       - name: model-api
 
         # 设置容器镜像
         # 格式：registry/repository:tag
-        # 本地 Minikube 测试用：model-api:v1.0
-        # 云端部署用：<你的仓库地址>/model-api:v1.0
-        image: model-api:v1.0
+        # Docker Hub: 22a7a/model-api:v1.0
+        image: 22a7a/model-api:v1.0
 
         # 设置 imagePullPolicy
         # 可选项：
-        # - Always: 每次都拉取镜像（用于latest标签）
+        # - Always: 每次都拉取镜像（用于 latest 标签）
         # - IfNotPresent: 本地无缓存时才拉取（用于带版本号标签）
         # - Never: 从不拉取，只用本地镜像
-        imagePullPolicy: "IfNotPresent"  # 改为 IfNotPresent
+        imagePullPolicy: "Always"  # 强制每次都拉取最新镜像
 
         # ==================================================================
         # 端口
@@ -118,6 +122,15 @@ spec:
           containerPort: 5000  # 改成 5000
           protocol: TCP
 
+        # ==================================================================
+        # 卷挂载（共享主机缓存）
+        # ==================================================================
+
+        volumeMounts:
+        - name: model-cache
+          mountPath: /root/.cache/huggingface  # 容器内缓存路径
+          readOnly: false  # 允许容器写入缓存
+          
         # ==================================================================
         # 环境变量（取自 ConfigMap）
         # ==================================================================
@@ -165,6 +178,7 @@ spec:
             # 单位：Gi（Gibibytes）、Mi（Mebibytes）
             # 设置为 1Gi
             memory: "1Gi"
+            nvidia.com/gpu: "1"
 
           limits:
             # CPU 限制：容器能用的最大 CPU
@@ -176,6 +190,7 @@ spec:
             # 超出后容器会被终止
             # 设置为 2Gi = 请求的 2 倍
             memory: "2Gi"
+            nvidia.com/gpu: "1" 
 
         # 为什么选择这些值？
         # - CPU 请求 500m：典型推理任务需要

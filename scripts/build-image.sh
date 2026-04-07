@@ -29,6 +29,11 @@ log_error() {
 IMAGE_NAME="model-api"
 IMAGE_TAG="v1.0"
 
+# 代理配置（如果使用代理，请取消注释并修改）
+# export HTTP_PROXY=http://127.0.0.1:7890
+# export HTTPS_PROXY=http://127.0.0.1:7890
+# export NO_PROXY=localhost,127.0.0.1,.aliyuncs.com
+
 log_info "开始构建 Docker 镜像..."
 log_info "镜像名称：${IMAGE_NAME}:${IMAGE_TAG}"
 
@@ -38,9 +43,17 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-# 构建镜像
+# 构建镜像（带代理支持）
 log_info "执行 docker build..."
-docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+if [ -n "$HTTP_PROXY" ]; then
+    log_info "使用代理：$HTTP_PROXY"
+    docker build \
+        --build-arg HTTP_PROXY=$HTTP_PROXY \
+        --build-arg HTTPS_PROXY=$HTTPS_PROXY \
+        -t ${IMAGE_NAME}:${IMAGE_TAG} .
+else
+    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+fi
 
 if [ $? -eq 0 ]; then
     log_success "镜像构建成功！"
